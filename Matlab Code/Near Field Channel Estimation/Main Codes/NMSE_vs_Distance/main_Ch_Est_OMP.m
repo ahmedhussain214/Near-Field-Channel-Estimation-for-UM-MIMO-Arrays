@@ -1,0 +1,188 @@
+close all
+clear all
+clc
+SNR_dB = 15;  SNR_linear=10.^(SNR_dB/10.);
+sigma2=1/SNR_linear;
+
+N_iter = 25;
+%%% system parameters
+N = 256; % number of beams (transmit antennas)
+K = 4; % number of users
+N_RF = 4; % number of RF chains
+M = 64; % number of subcarriers
+L = 3; % number of paths per user
+
+
+fc = 28e9; % carrier frequency
+sector = pi/6;
+fs = 100e6; % bandwidth
+Q = 32;  % number of pilot blocks
+tmax = 20e-9; % maximum of the path delay
+c = 3e8;
+lambda_c = c/fc;
+d = lambda_c / 2;
+A = (N-1).*d;
+RD = (2*A.^2)/lambda_c;
+c = 1/(sigma2)*ones(1,Q*N_RF);
+C = diag(c);
+
+R = linspace(5,600,30);
+%R = logspace(log10(2*A),log10(360),30)
+
+% R = [10 80 348 500];
+NMSE = zeros(1,length(R));
+NMSE0 = zeros(1,length(R));
+NMSE1 = zeros(1,length(R));
+NMSE2 = zeros(1,length(R));
+NMSE3 = zeros(1,length(R));
+NMSE4 = zeros(1,length(R));
+NMSE5 = zeros(1,length(R));
+NMSE6 = zeros(1,length(R));
+NMSE7 = zeros(1,length(R));
+
+
+%DFT    
+s = 2;
+D = s*N; %字典规模
+row = (-(N - 1)/2:(N - 1)/2)' ;
+col = -1 + 2/D : 2/D : 1 ;
+DFT  =  exp( 1j*  pi * row * col ) / sqrt(N);
+
+% Quacode
+rho = 2*A;
+beta = 1.2;
+rho_max = 348;
+[Polarcodebook,label] = PolarCodeBook(N, s, d, lambda_c, beta, rho,rho_max);
+S = size(Polarcodebook, 2);
+ac = abs(corr(Polarcodebook));
+c = linspace(3,RD,S);
+% scatter(label(1,:),label(2,:),3,c,'filled');
+% xlabel('Angle','Interpreter','Latex');
+% ylabel('Distance','Interpreter','Latex');
+% set(gca,'fontsize',18);
+% grid on
+% yline(RD,'--b',{'Rayleigh distance'});
+% yline(RD/10,'--g',{'Rayleigh distance /10'});
+
+
+
+
+
+%mycodebook
+[dict1, label1] = PCodeBook(N, A, RD, lambda_c);
+S1 = size(label1, 2);
+% label1(1,:) = sin(label1(1,:));
+
+[dict3, label3] = PCodeBooka(N, A, RD, lambda_c);
+S3 = size(label3, 2);
+c = linspace(3,RD,S1);
+
+figure
+scatter(label1(1,:),label1(2,:),1);
+xlabel('Angle','Interpreter','Latex');
+ylabel('Distance','Interpreter','Latex');
+set(gca,'fontsize',18);
+yline(RD,'--r',{'Rayleigh distance'});
+yline(RD/10,'--r',{'Rayleigh distance /10'});
+box on
+xlim([-1 1])
+ax = gca;
+
+% exportgraphics(ax,'PolarCodebook.eps','ContentType','vector')
+% exportgraphics(ax,'PolarCodebook.jpg')
+
+% 
+% aa = abs(corr(dict1));
+
+R_len = length(R);
+t0 = clock;
+for i_r = 1:R_len
+    Rmin = R(i_r);
+    Rmax = Rmin;
+
+     error0 = 0; error1 = 0; error2 = 0; error3 =0;error4 =0;error5 =0; error6 =0;error7 =0;
+    parfor iter = 1:N_iter
+        fprintf('R = %.4f[%d/%d] | iteration:[%d/%d] | run %.4f s\n', Rmin, i_r, R_len, iter, N_iter, etime(clock, t0));
+       
+        % Wideband spatial channel
+        [H, hc, r, theta, G] = near_field_channel(N, K, L, d, fc, fs, M, Rmin, Rmax,sector,1);
+        true_angle = rad2deg (theta);
+        H = channel_norm(H);
+        Phi = (2*randi(2,Q*N_RF,N) - 3)/sqrt(N);
+        noise = sqrt(sigma2)*(randn(Q*N_RF,M)+1i*randn(Q*N_RF,M))/sqrt(2);
+        for k = 1 : K
+            Hsf =  reshape(H(k, :, :), [N, M]);    % Hsf = F*Haf
+           
+            % adaptive selecting matrix
+            Z = Phi*Hsf + noise;
+           
+            Znorm = norm(Z, 'fro');
+            %% Oracle LS
+             Hsf_hat0 = Oracle_LS(Z, Phi, N, M, r(k,:), theta(k,:), d, fc);                     
+            %% Near field on-grid
+            [Haf_hat3,sup3] = SOMP(Z, Phi*Polarcodebook,2*L, S, M);
+            %% Far field on-grid
+            [Haf_hat1, sup1] = SOMP(Z, Phi*DFT, 2*L, D, M);
+           %%    Near Field Beam Focus
+           [Haf_hat4,sup4] = SOMP_N( Z,  Phi*dict1, 3*L, S1, M,sigma2);
+           %%   Refined Beam Focus
+           [Haf_hat5,sup5] = SOMP_N( Z,  Phi*dict3, 3*L, S3, M,sigma2);
+            %% Near field off-grid for SOMP
+            [A4, G4, r4, theta4] =P_SIGW( Z/Znorm, Phi'/Znorm, Polarcodebook(:, sup3), Haf_hat3(sup3,:), label(2, sup3), label(1, sup3), ...
+            fc, d, 4,500*sigma2, 20, 10, 1, 1e-8);
+            Hsf_hat4 = A4*G4;
+            %% Near field off-grid for BF-OMP
+            [A6, G6, r6, theta6] =P_SIGW_N( Z/Znorm, Phi'/Znorm, dict1(:, sup4), Haf_hat4(sup4,:), label1(2, sup4), label1(1, sup4), ...
+            fc, d, L, 40, 20, 10, 1, 1e-8);
+            Hsf_hat5 = A6*G6;     
+            % %% Near field off-grid for Refined BF-OMP
+            % [A7, G7, r7, theta7] =P_SIGW_N( Z/Znorm, Phi'/Znorm, dict3(:, sup5), Haf_hat5(sup5,:), label3(2, sup5), label3(1, sup5), ...
+            % fc, d, L, 20, 20, 10, 1, 1e-8);
+            % Hsf_hat6 = A7*G7;     
+           
+            error0 = error0 + norm(Hsf - Hsf_hat0,'fro')^2/norm(Hsf,'fro')^2;
+            error1 = error1 + norm(Hsf - Polarcodebook*Haf_hat3,'fro')^2/norm(Hsf,'fro')^2;
+            error2 = error2 + norm(Hsf - dict1*Haf_hat4,'fro')^2/norm(Hsf,'fro')^2;
+            error3 = error3 + norm(Hsf - dict3*Haf_hat5,'fro')^2/norm(Hsf,'fro')^2;
+            error4 = error4 + norm(Hsf - DFT*Haf_hat1,'fro')^2/norm(Hsf,'fro')^2;
+            error5 = error5 + norm(Hsf - Hsf_hat4,'fro')^2/norm(Hsf,'fro')^2;
+            error6 = error6 + norm(Hsf - Hsf_hat5,'fro')^2/norm(Hsf,'fro')^2;
+            % error7 = error7 + norm(Hsf - Hsf_hat6,'fro')^2/norm(Hsf,'fro')^2;
+
+        end    
+    end
+    NMSE0(i_r) = error0/K/N_iter;
+    NMSE1(i_r) = error1/K/N_iter;
+    NMSE2(i_r) = error2/K/N_iter;
+    NMSE3(i_r) = error3/K/N_iter;
+    NMSE4(i_r) = error4/K/N_iter;
+    NMSE5(i_r) = error5/K/N_iter;
+    NMSE6(i_r) = error6/K/N_iter;
+    % NMSE7(i_r) = error7/K/N_iter;
+end
+
+set(groot,'defaultAxesTickLabelInterpreter','latex');
+x = 1:2:size(R,2);
+figure; hold on; box on; grid on;
+plot(R(x),10*log10(NMSE4(x)),'-v','Linewidth',2,'markersize',5,'color','0.9290 0.6940 0.1250','MarkerFaceColor','w');
+plot(R(x),10*log10(NMSE1(x)),'-s','Linewidth',2,'markersize',5,'color','[0 0.4470 0.7410]','MarkerFaceColor','w');
+plot(R(x),10*log10(NMSE2(x)),'-v','Linewidth',2,'markersize',5,'color','0.6350 0.0780 0.1840','MarkerFaceColor','w');
+plot(R(x),10*log10(NMSE3(x)),'-o','Linewidth',2,'markersize',5,'color','0.4660 0.6740 0.1880]','MarkerFaceColor','w');
+plot(R(x),10*log10(NMSE5(x)),'--','Linewidth',2,'markersize',5,'color','blue','MarkerFaceColor','w');
+plot(R(x),10*log10(NMSE6(x)),'--','Linewidth',2,'markersize',5,'color','green','MarkerFaceColor','w');
+plot(R(x),10*log10(NMSE0(x)),'--','Linewidth',2,'markersize',5,'color','black','MarkerFaceColor','w');
+
+% plot(R(x),10*log10(NMSE7(x)),'--','Linewidth',2,'markersize',5,'color','red','MarkerFaceColor','w');
+
+xlabel('Distance [meters]','Interpreter','Latex');
+ylabel('NMSE [dB]','Interpreter','Latex');
+grid on
+ylim([-40 0])
+xlim([2*A 500])
+xline(RD,'--',{'Rayleigh Distance'});
+legend( 'FF-SOMP [13]','P-SOMP [16]','BF-SOMP','RF-BF-SOMP',' SIGW P-SOMP [16]','SIGW BF-SOMP','Oracle LS','FontSize',10,'Location','Northeast','Interpreter','Latex');
+set(gca,'fontsize',18);
+% ax = gca;
+% exportgraphics(ax,'NMSE_vs_Full_Distance.eps','ContentType','vector')
+% exportgraphics(ax,'NMSE_vs_Full_Distance.jpg')
+
